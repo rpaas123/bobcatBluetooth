@@ -1,77 +1,88 @@
 #include <BLEDevice.h>
-#include <BLEUtils.h>
 #include <BLEServer.h>
-#include <ESP32Servo360.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <ESP32Servo.h>
 
-// UUIDs dla BLE
+// BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-// Obiekty BLE
-BLEServer* pServer = nullptr;
-BLECharacteristic* pCharacteristic = nullptr;
+// Serwa
+Servo servoLeftDrive;   // 360°
+Servo servoRightDrive;  // 360°
+Servo servoArm;         // 180°
+Servo servoBucket;      // 180°
 
-// Obiekty serwomechanizmów
-ESP32Servo360 leftServo;
-ESP32Servo360 rightServo;
+// Piny
+#define PIN_LEFT_DRIVE   13
+#define PIN_RIGHT_DRIVE  12
+#define PIN_ARM          14
+#define PIN_BUCKET       15
 
-// Piny serwomechanizmów
-const int leftServoPin = 4;
-const int rightServoPin = 5;
+// Ustawienia joysticka
+const int JOYSTICK_MIN = 0;
+const int JOYSTICK_MAX = 95;
+const int JOYSTICK_MID = 50;
 
-// Funkcja mapująca wartości z zakresu 0–100 na -100 do 100
-int mapJoystickValue(int value) {
-  return map(value, 0, 100, -100, 100);
-}
-
-// Callback dla odbierania danych BLE
 class MyCallbacks: public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) override {
-    std::string rxValue = pCharacteristic->getValue();
-    if (rxValue.length() < 3) return;
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string rx = pCharacteristic->getValue();
+    if (rx.length() < 2) return;
 
-    char prefix = rxValue[0];
-    int value = atoi(rxValue.substr(1).c_str());
-    int speed = mapJoystickValue(value);
+    char prefix = rx[0];
+    int value = atoi(rx.substr(1).c_str());
 
     switch (prefix) {
-      case 'A': // Lewy joystick poziomo
-        leftServo.setSpeed(speed);
+      case 'C': case 'D':  // jazda (prawy joystick)
+        handleDrive(value);
         break;
-      case 'B': // Lewy joystick pionowo
-        rightServo.setSpeed(speed);
+      case 'A':  // Ramię
+        servoArm.write(map(value, JOYSTICK_MIN, JOYSTICK_MAX, 0, 180));
         break;
-      case 'C': // Prawy joystick poziomo
-        // Można dodać dodatkowe funkcje
-        break;
-      case 'D': // Prawy joystick pionowo
-        // Można dodać dodatkowe funkcje
+      case 'B':  // Łyżka / chwytak
+        servoBucket.write(map(value, JOYSTICK_MIN, JOYSTICK_MAX, 0, 180));
         break;
     }
+  }
+
+  void handleDrive(int val) {
+    int speed = map(val, JOYSTICK_MIN, JOYSTICK_MAX, -90, 90);  // 50 = stop
+    int leftPWM = 90 + speed;
+    int rightPWM = 90 - speed;
+
+    servoLeftDrive.write(constrain(leftPWM, 0, 180));
+    servoRightDrive.write(constrain(rightPWM, 0, 180));
   }
 };
 
 void setup() {
   Serial.begin(115200);
 
-  // Inicjalizacja serwomechanizmów
-  leftServo.attach(leftServoPin);
-  rightServo.attach(rightServoPin);
+  // Serwa
+  servoLeftDrive.attach(PIN_LEFT_DRIVE);
+  servoRightDrive.attach(PIN_RIGHT_DRIVE);
+  servoArm.attach(PIN_ARM);
+  servoBucket.attach(PIN_BUCKET);
 
-  // Inicjalizacja BLE
-  BLEDevice::init("ESP32-C3 Excavator");
-  pServer = BLEDevice::createServer();
+  // BLE
+  BLEDevice::init("ESP32-Excavator");
+  BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_WRITE
-                    );
+
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
   pCharacteristic->setCallbacks(new MyCallbacks());
+
   pService->start();
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->start();
+
+  Serial.println("BLE Excavator Ready");
 }
 
 void loop() {
-  // Główna pętla może być pusta, ponieważ sterowanie odbywa się przez BLE
+  // nic
 }
