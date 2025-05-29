@@ -1,88 +1,118 @@
 #include <BLEDevice.h>
-#include <BLEServer.h>
 #include <BLEUtils.h>
-#include <BLE2902.h>
-#include <ESP32Servo.h>
-
-// BLE UUIDs
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#include <BLEServer.h>
+#include <ESP32Servo.h>  // Kompatybilna z ESP32
 
 // Serwa
-Servo servoLeftDrive;   // 360°
-Servo servoRightDrive;  // 360°
-Servo servoArm;         // 180°
-Servo servoBucket;      // 180°
+Servo leftWheel;
+Servo rightWheel;
+Servo bucket;
+Servo arm;
 
 // Piny
-#define PIN_LEFT_DRIVE   13
-#define PIN_RIGHT_DRIVE  12
-#define PIN_ARM          14
-#define PIN_BUCKET       15
+#define LEFT_WHEEL_PIN 3
+#define RIGHT_WHEEL_PIN 4
+#define BUCKET_PIN 5
+#define ARM_PIN 6
 
-// Ustawienia joysticka
-const int JOYSTICK_MIN = 0;
-const int JOYSTICK_MAX = 95;
-const int JOYSTICK_MID = 50;
+// BLE
+BLECharacteristic *pCharacteristic;
+bool deviceConnected = false;
 
-class MyCallbacks: public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) {
-    std::string rx = pCharacteristic->getValue();
-    if (rx.length() < 2) return;
+// Dane joysticków
+int joyA = 50;
+int joyB = 50;
+int joyC = 50;
+int joyD = 50;
 
-    char prefix = rx[0];
-    int value = atoi(rx.substr(1).c_str());
-
-    switch (prefix) {
-      case 'C': case 'D':  // jazda (prawy joystick)
-        handleDrive(value);
-        break;
-      case 'A':  // Ramię
-        servoArm.write(map(value, JOYSTICK_MIN, JOYSTICK_MAX, 0, 180));
-        break;
-      case 'B':  // Łyżka / chwytak
-        servoBucket.write(map(value, JOYSTICK_MIN, JOYSTICK_MAX, 0, 180));
-        break;
-    }
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
   }
 
-  void handleDrive(int val) {
-    int speed = map(val, JOYSTICK_MIN, JOYSTICK_MAX, -90, 90);  // 50 = stop
-    int leftPWM = 90 + speed;
-    int rightPWM = 90 - speed;
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+  }
+};
 
-    servoLeftDrive.write(constrain(leftPWM, 0, 180));
-    servoRightDrive.write(constrain(rightPWM, 0, 180));
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    String input = String(pCharacteristic->getValue().c_str());
+
+    if (input.length() > 0) {
+      Serial.print("Received: ");
+      Serial.println(input);
+
+      if (input.startsWith("A")) {
+        joyA = constrain(input.substring(1).toInt(), 0, 95);
+      } else if (input.startsWith("B")) {
+        joyB = constrain(input.substring(1).toInt(), 0, 95);
+      } else if (input.startsWith("C")) {
+        joyC = constrain(input.substring(1).toInt(), 0, 95);
+      } else if (input.startsWith("D")) {
+        joyD = constrain(input.substring(1).toInt(), 0, 95);
+      }
+    }
   }
 };
 
 void setup() {
   Serial.begin(115200);
 
-  // Serwa
-  servoLeftDrive.attach(PIN_LEFT_DRIVE);
-  servoRightDrive.attach(PIN_RIGHT_DRIVE);
-  servoArm.attach(PIN_ARM);
-  servoBucket.attach(PIN_BUCKET);
+  // Serwa - ustawienia PWM dla ESP32
+  leftWheel.setPeriodHertz(50);
+  rightWheel.setPeriodHertz(50);
+  bucket.setPeriodHertz(50);
+  arm.setPeriodHertz(50);
 
-  // BLE
-  BLEDevice::init("ESP32-Excavator");
+  leftWheel.attach(LEFT_WHEEL_PIN, 500, 2500);
+  rightWheel.attach(RIGHT_WHEEL_PIN, 500, 2500);
+  bucket.attach(BUCKET_PIN, 500, 2500);
+  arm.attach(ARM_PIN, 500, 2500);
+
+  // BLE setup
+  BLEDevice::init("BobcatESP32");
   BLEServer *pServer = BLEDevice::createServer();
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  pServer->setCallbacks(new MyServerCallbacks());
 
-  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID,
-    BLECharacteristic::PROPERTY_WRITE
-  );
+  BLEService *pService = pServer->createService(BLEUUID((uint16_t)0xFFE0));
+  pCharacteristic = pService->createCharacteristic(
+                      BLEUUID((uint16_t)0xFFE1),
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_WRITE
+                    );
+
   pCharacteristic->setCallbacks(new MyCallbacks());
-
+  pCharacteristic->setValue("Bobcat Ready");
   pService->start();
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->start();
 
-  Serial.println("BLE Excavator Ready");
+  BLEAdvertising *pAdvertising = pServer->getAdvertising();
+  pAdvertising->start();
 }
 
 void loop() {
-  // nic
+  // --- TANK DRIVE ---
+  int speed = map(joyD, 0, 95, -100, 100); // przód/tył
+  int turn  = map(joyC, 0, 95, -100, 100); // lewo/prawo
+
+  int leftMotor  = speed + turn;
+  int rightMotor = speed - turn;
+
+  leftMotor = constrain(leftMotor, -100, 100);
+  rightMotor = constrain(rightMotor, -100, 100);
+
+  int leftPulse  = map(leftMotor, -100, 100, 0, 180);
+  int rightPulse = map(rightMotor, -100, 100, 180, 0); // odwrotna strona
+
+  leftWheel.write(leftPulse);
+  rightWheel.write(rightPulse);
+
+  // --- ARM + BUCKET ---
+  int armPos = map(joyA, 0, 95, 0, 180);
+  int bucketPos = map(joyB, 0, 95, 0, 180);
+
+  arm.write(armPos);
+  bucket.write(bucketPos);
+
+  delay(20);
 }
